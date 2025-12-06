@@ -29,7 +29,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 POLL_INTERVAL = 865
-TEST_MODE = False
+TEST_MODE = True
 TEST_FILE = "test_live.json"
 
 LOG_FILE = "3scorebot.log"
@@ -288,3 +288,4 @@ def run_bot():
 # ----------------------
 if __name__ == "__main__":
     run_bot()
+
