@@ -16,16 +16,17 @@ import logging
 import signal
 import sys
 from datetime import datetime
+import os
 
 # ----------------------
 # CONFIG (you already gave these; unchanged)
 # ----------------------
-API_KEY = "424a05410a63c418ab43e3e98534d18a"  # API-Football.com
+API_KEY = os.getenv("API_FOOTBALL_KEY")  # API-Football.com
 BASE_URL = "https://v3.football.api-sports.io/fixtures"
 HEADERS = {"x-apisports-key": API_KEY}
 
-TELEGRAM_BOT_TOKEN = "8414736163:AAHk-RIqgTLiBC6M_fKGoKRBHDtxpoGvFEI"
-TELEGRAM_CHAT_ID = "1584184290"
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 POLL_INTERVAL = 865
 TEST_MODE = False
