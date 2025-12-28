@@ -1,43 +1,39 @@
 #!/usr/bin/env python3
-"""
-3scorebot.py
-A robust API-Football -> Telegram notifier:
-- Sends a single nicely formatted startup message listing live matches
-- Monitors live matches and sends a Telegram alert when a team reaches exactly 3 goals
-- Uses API-Football (v3) "fixtures?live=all" endpoint
-- Respects a configurable POLL_INTERVAL to avoid hitting request limits
-- Test mode: load a local JSON file instead of calling the API (useful for dry-run)
-"""
-
-import requests
 import time
-import json
 import logging
 import signal
 import sys
-from datetime import datetime
+import json
 import os
 
-# ----------------------
-# CONFIG (you already gave these; unchanged)
-# ----------------------
-API_KEY = os.getenv("API_FOOTBALL_KEY")  # API-Football.com
-BASE_URL = "https://v3.football.api-sports.io/fixtures"
-HEADERS = {"x-apisports-key": API_KEY}
+# Telegram API calls use standard requests
+import requests as standard_requests 
+# SofaScore API calls use curl_cffi for anti-bot bypass
+try:
+    from curl_cffi import requests
+    # --- NEW: Explicitly import the exceptions module from curl_cffi ---
+    from curl_cffi.requests import exceptions as cffi_exceptions
+except ImportError:
+    print("Error: Library 'curl_cffi' not found. Please run: pip install curl_cffi")
+    sys.exit(1)
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-POLL_INTERVAL = 865
-TEST_MODE = True
-TEST_FILE = "test_live.json"
+# --- CONFIGURATION ---
+TELEGRAM_BOT_TOKEN = "8414736163:AAHk-RIqgTLiBC6M_fKGoKRBHDtxpoGvFEI"
+TELEGRAM_CHAT_ID = "1584184290"
 
+SOFASCORE_API_URL = "https://api.sofascore.com/api/v1/sport/football/events/live"
+
+POLL_INTERVAL = 600  # Updated to 10 minutes (600 seconds)
 LOG_FILE = "3scorebot.log"
-logging.basicConfig(
-    filename=LOG_FILE,
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-)
+
+# --- Test Mode Configuration ---
+TEST_MODE = False
+TEST_FILE = "test_live.json"
+# -----------------------------
+
+# --- Logging Setup ---
+logging.basicConfig(filename=LOG_FILE, level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 console = logging.StreamHandler()
 console.setLevel(logging.INFO)
 formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
@@ -48,200 +44,190 @@ notified_matches = set()
 startup_message_sent = False
 running = True
 
+# Robust headers for SofaScore anti-bot measures
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'application/json, text/plain, */*',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Connection': 'keep-alive',
+    'Referer': 'https://www.sofascore.com/',
+    'Origin': 'https://www.sofascore.com'
+}
 
-# ----------------------
-# Utility functions
-# ----------------------
-def send_telegram(message: str):
-    """Send text message to Telegram."""
+
+def send_telegram(message):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        params = {
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": message,
-            "parse_mode": "Markdown",
-            "disable_web_page_preview": True,
-        }
-        r = requests.get(url, params=params, timeout=15)
+        params = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown", "disable_web_page_preview": True}
+        r = standard_requests.get(url, params=params, timeout=20)
         r.raise_for_status()
-        logging.info("Telegram message sent.")
         return True
     except Exception as e:
-        logging.error(f"Failed to send Telegram message: {e}")
+        logging.error("Telegram error: %s", e)
         return False
 
 
 def send_telegram_photo(photo_path, caption=""):
-    """Send a photo with caption in ONE Telegram message."""
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
         with open(photo_path, "rb") as img:
             files = {"photo": img}
-            data = {
-                "chat_id": TELEGRAM_CHAT_ID,
-                "caption": caption,
-                "parse_mode": "Markdown"
-            }
-            r = requests.post(url, data=data, files=files, timeout=20)
+            data = {"chat_id": TELEGRAM_CHAT_ID, "caption": caption, "parse_mode": "Markdown"}
+            r = standard_requests.post(url, data=data, files=files, timeout=20)
             r.raise_for_status()
-            logging.info("Telegram photo sent.")
-            return True
+        return True
+    except FileNotFoundError:
+        return send_telegram(caption)
     except Exception as e:
-        logging.error(f"Failed to send Telegram photo: {e}")
+        logging.error("Photo send error: %s", e)
         return False
 
 
-def format_kickoff(iso_dt: str):
+def parse_sofascore_match(match):
+    """Parses the raw SofaScore API JSON into a simple format."""
+    home = match.get("homeTeam", {}).get("name", "Home")
+    away = match.get("awayTeam", {}).get("name", "Away")
+    
+    gh = match.get("homeScore", {}).get("current", 0)
+    ga = match.get("awayScore", {}).get("current", 0)
+    
+    if gh is None: gh = 0
+    if ga is None: ga = 0
+        
+    status = match.get("status", {}).get("description", "In Play")
+    league = match.get("tournament", {}).get("name", "Unknown League")
+    category = match.get("tournament", {}).get("category", {}).get("name", "")
+    full_league_name = f"{category} - {league}" if category else league
+    
+    match_id = match.get("id")
+    
+    return {
+        "id": match_id,
+        "home": home,
+        "away": away,
+        "gh": int(gh),
+        "ga": int(ga),
+        "status": status,
+        "league": full_league_name
+    }
+
+
+def fetch_live_matches():
+    if TEST_MODE:
+        logging.info(f"TEST_MODE is ON. Loading matches from {TEST_FILE}...")
+        try:
+            if not os.path.exists(TEST_FILE):
+                logging.error(f"Error: Test file '{TEST_FILE}' not found. Please create it.")
+                return []
+
+            with open(TEST_FILE, 'r') as f:
+                data = json.load(f)
+            
+            matches = data.get('events', [])
+            logging.info(f"Successfully loaded {len(matches)} matches from test file.")
+            return matches
+            
+        except json.JSONDecodeError:
+            logging.error(f"Error: Test file '{TEST_FILE}' is not valid JSON.")
+            return []
+        except Exception as e:
+            logging.error(f"Error reading test file: {e}")
+            return []
+
+    # --- LIVE API REQUEST (Only runs if TEST_MODE is False) ---
+    logging.info("Fetching live matches from SofaScore API...")
     try:
-        dt = datetime.fromisoformat(iso_dt.replace("Z", "+00:00"))
-        return dt.strftime("%Y-%m-%d %H:%M UTC")
-    except Exception:
-        return iso_dt
+        response = requests.get(
+            SOFASCORE_API_URL, 
+            headers=HEADERS, 
+            impersonate="chrome120", 
+            timeout=20
+        )
+        
+        response.raise_for_status() 
+
+        data = response.json()
+        
+        matches = data.get('events', [])
+        logging.info(f"Successfully fetched {len(matches)} live matches.")
+        return matches
+
+    # --- UPDATED EXCEPTION HANDLING BLOCK ---
+    # Catch RequestException, which includes Timeout, ConnectionError, etc.
+    except cffi_exceptions.RequestException as e: 
+        if isinstance(e, cffi_exceptions.Timeout):
+             logging.error(f"Error fetching live matches: Connection timed out after 20s. Anti-bot or network issue.")
+        elif hasattr(e, 'response') and e.response and e.response.status_code == 403:
+            logging.error("SofaScore blocked the request (403) even with impersonation. Anti-bot measures are very high.")
+        else:
+            logging.error(f"Generic error fetching live matches: {e}")
+        return []
+    # Catch any unexpected, non-request related errors
+    except Exception as e:
+        logging.error(f"An unexpected error occurred during fetch: {e}")
+        return []
+    # --- END UPDATED EXCEPTION HANDLING BLOCK ---
 
 
-def extract_goals(m: dict):
-    gh = m.get("goals", {}).get("home")
-    ga = m.get("goals", {}).get("away")
-
-    if gh is None:
-        gh = m.get("score", {}).get("halftime", {}).get("home", 0)
-    if ga is None:
-        ga = m.get("score", {}).get("halftime", {}).get("away", 0)
-
-    try:
-        gh = int(gh)
-        ga = int(ga)
-    except:
-        gh, ga = 0, 0
-
-    return gh, ga
-
-
-def short_match_text(m: dict):
-    home = m.get("teams", {}).get("home", {}).get("name", "Home")
-    away = m.get("teams", {}).get("away", {}).get("name", "Away")
-    gh, ga = extract_goals(m)
-    status = m.get("fixture", {}).get("status", {}).get("short", "N/A")
-    return f"{home} {gh}-{ga} {away} — {status}"
-
-
-def format_startup_message(matches: list):
-    if not matches:
-        return "⚡ *Live Matches at Startup*\n\n_No live matches found at startup._"
-
-    lines = ["⚡ *Live Matches at Startup*\n"]
-    for m in matches:
-        league = m.get("league", {}).get("name", "Unknown League")
-        home = m.get("teams", {}).get("home", {}).get("name", "Home")
-        away = m.get("teams", {}).get("away", {}).get("name", "Away")
-        gh, ga = extract_goals(m)
-        status = m.get("fixture", {}).get("status", {}).get("short", "N/A")
-        kickoff = m.get("fixture", {}).get("date")
-        kickoff_str = format_kickoff(kickoff) if kickoff else "Unknown time"
-
-        status_emoji = {
-            "1H": "🟢 In progress",
-            "2H": "🟠 In progress (2H)",
-            "HT": "⏸ Halftime",
-            "FT": "🔵 Finished",
-        }.get(status, status)
-
-        lines.append(f"*{league}*")
-        lines.append(f"{home} *{gh}* - *{ga}* {away}  —  {status_emoji}")
-        lines.append(f"Kickoff: `{kickoff_str}`\n")
-
+def format_startup_message(matches):
+    """Limits the startup message to the top 10 matches to avoid Telegram's 400 error."""
+    
+    top_matches = matches[:10] 
+    
+    if not top_matches:
+        return "⚡ *Live Matches at Startup*\n\n_No live matches found on SofaScore._"
+    
+    lines = ["⚡ *Top 10 Live Matches at Startup*\n"]
+    for m in top_matches:
+        data = parse_sofascore_match(m)
+        lines.append(f"*{data['league']}*")
+        lines.append(f"{data['home']} *{data['gh']}* - *{data['ga']}* {data['away']} — {data['status']}")
+        lines.append("")
+        
+    if len(matches) > len(top_matches):
+        lines.append(f"_{len(matches)} total live matches found. Check the next alert for 3-0 scores._")
+    else:
+        lines.append(f"_{len(matches)} total live matches found._")
+        
     return "\n".join(lines)
 
 
-# ----------------------
-# Fetching
-# ----------------------
-def fetch_live_matches():
-    if TEST_MODE:
-        logging.info("TEST_MODE enabled — loading test file: %s", TEST_FILE)
-        try:
-            with open(TEST_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if isinstance(data, dict) and "response" in data:
-                return data.get("response", [])
-            if isinstance(data, list):
-                return data
-            return []
-        except Exception as e:
-            logging.error("Failed to read test file: %s", e)
-            return []
-
-    params = {"live": "all"}
-    try:
-        r = requests.get(BASE_URL, headers=HEADERS, params=params, timeout=20)
-        r.raise_for_status()
-    except Exception as e:
-        logging.error("HTTP error fetching matches: %s", e)
-        return []
-
-    try:
-        data = r.json()
-    except:
-        logging.error("Bad JSON response")
-        return []
-
-    if "response" not in data:
-        return []
-
-    matches = data.get("response", [])
-    logging.info("Fetched %d live matches", len(matches))
-    return matches
-
-
-# ----------------------
-# Core logic
-# ----------------------
-def check_for_3goals_and_alert(matches: list):
+def check_for_3goals_and_alert(matches):
     for m in matches:
-        try:
-            fixture = m.get("fixture", {})
-            match_id = fixture.get("id")
-            if match_id is None:
-                continue
+        data = parse_sofascore_match(m)
+        match_id = data["id"]
+        gh = data["gh"]
+        ga = data["ga"]
+        home = data["home"]
+        away = data["away"]
+        status = data["status"]
+        
+        if not match_id:
+            continue
 
-            gh, ga = extract_goals(m)
-            home_name = m.get("teams", {}).get("home", {}).get("name", "Home")
-            away_name = m.get("teams", {}).get("away", {}).get("name", "Away")
-            status = fixture.get("status", {}).get("short", "")
-
-            # NEW CRITERIA: Score must be EXACTLY 3–0 or 0–3
-            if ((gh == 3 and ga == 0) or (gh == 0 and ga == 3)) and match_id not in notified_matches:
-
-                scorer = home_name if gh == 3 else away_name
-
-                caption = (
-                    f"⚽ *GOAL ALERT!*\n\n"
-                    f"{scorer} now leads *3 - 0*! \n\n"
-                    f"{home_name} *{gh}* - *{ga}* {away_name}\n\n"
-                    f"_Match status: {status}_\n\n"
-                    f"🔥 *Stake Now!* 🔥\n"
-                    f"_Avoid: Gibraltar, 2 Bundesliga, U-anything & England Championship, Arab Leagues_"
-                )
-
-                logging.info("Sending 3-0 alert: %s", short_match_text(m))
-
-                time.sleep(2)
-
-                send_telegram_photo("stake_now_small.jpg", caption)
-
+        if ((gh == 3 and ga == 0) or (gh == 0 and ga == 3)) and match_id not in notified_matches:
+            scorer = home if gh == 3 else away
+            
+            # --- UPDATED CAPTION ---
+            caption = (
+                f"⚽ *GOAL ALERT!*\n\n"
+                f"{scorer} now leads *3 - 0*!\n\n"
+                f"{home} *{gh}* - *{ga}* {away}\n"
+                f"⏱️ **{status}**\n\n"
+                f"🏆 {data['league']}\n"
+                f"🔥 *Stake Now!* 🔥\n"
+                f"_Avoid: Gibraltar, 2 Bundesliga, U-anything, Championship, Arab Leagues, too many goals too fast_"
+            )
+            
+            if send_telegram_photo("stake_now_small.jpg", caption):
+                logging.info(f"Alert sent for {home} vs {away}")
                 notified_matches.add(match_id)
 
-        except Exception as e:
-            logging.exception("Error evaluating match: %s", e)
 
-
-
-# ----------------------
-# Graceful shutdown handler
-# ----------------------
 def handle_exit(signum, frame):
     global running
-    logging.info("Shutdown signal received. Exiting...")
+    logging.info("Shutting down bot...")
     running = False
 
 
@@ -249,43 +235,34 @@ signal.signal(signal.SIGINT, handle_exit)
 signal.signal(signal.SIGTERM, handle_exit)
 
 
-# ----------------------
-# Main loop
-# ----------------------
 def run_bot():
     global startup_message_sent, running
-
-    logging.info("Bot starting. TEST_MODE=%s, poll interval=%s seconds", TEST_MODE, POLL_INTERVAL)
-
+    logging.info("Bot started (Curl_Cffi Mode).")
+    
     while running:
         matches = fetch_live_matches()
-
+        
+        # 1. Check for 3-0 goals and ALERT
+        check_for_3goals_and_alert(matches) 
+        
         if not startup_message_sent:
-            try:
-                startup_msg = format_startup_message(matches)
-                if TEST_MODE:
-                    startup_msg = "⚠ _TEST MODE Enabled_\n\n" + startup_msg
-                send_telegram(startup_msg)
-                startup_message_sent = True
-            except Exception as e:
-                logging.exception("Startup message failed: %s", e)
-
-        try:
-            check_for_3goals_and_alert(matches)
-        except Exception as e:
-            logging.exception("Unexpected error in loop: %s", e)
-
-        for _ in range(int(POLL_INTERVAL)):
+            msg = format_startup_message(matches)
+            send_telegram(msg)
+            startup_message_sent = True
+            
+            # 2. THEN, add all 3-0 matches to notified_matches
+            for m in matches:
+                data = parse_sofascore_match(m)
+                if (data['gh'] == 3 and data['ga'] == 0) or (data['gh'] == 0 and data['ga'] == 3):
+                    notified_matches.add(data['id'])
+        
+        # 3. Sleep loop 
+        logging.info(f"Sleeping for {POLL_INTERVAL} seconds...")
+        for _ in range(POLL_INTERVAL):
             if not running:
                 break
             time.sleep(1)
 
-    logging.info("Bot stopped.")
 
-
-# ----------------------
-# Entry point
-# ----------------------
 if __name__ == "__main__":
     run_bot()
-
