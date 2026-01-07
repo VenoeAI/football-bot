@@ -186,7 +186,7 @@ def format_startup_message(matches):
         lines.append("")
         
     if len(matches) > len(top_matches):
-        lines.append(f"_{len(matches)} total live matches found. Check the next alert for 4-0 scores._")
+        lines.append(f"_{len(matches)} total live matches found. Check the next alert for 3-0 scores._")
     else:
         lines.append(f"_{len(matches)} total live matches found._")
         
@@ -206,13 +206,13 @@ def check_for_3goals_and_alert(matches):
         if not match_id:
             continue
 
-        if ((gh == 4 and ga == 0) or (gh == 0 and ga == 4)) and match_id not in notified_matches:
-            scorer = home if gh == 4 else away
+        if ((gh == 3 and ga == 0) or (gh == 0 and ga == 3)) and match_id not in notified_matches:
+            scorer = home if gh == 3 else away
             
             # --- UPDATED CAPTION ---
             caption = (
                 f"⚽ *GOAL ALERT!*\n\n"
-                f"{scorer} now leads *4 - 0*!\n\n"
+                f"{scorer} now leads *3 - 0*!\n\n"
                 f"{home} *{gh}* - *{ga}* {away}\n"
                 f"⏱️ **{status}**\n\n"
                 f"🏆 {data['league']}\n"
@@ -242,7 +242,7 @@ def run_bot():
     while running:
         matches = fetch_live_matches()
         
-        # 1. Check for 4-0 goals and ALERT
+        # 1. Check for 3-0 goals and ALERT
         check_for_3goals_and_alert(matches) 
         
         if not startup_message_sent:
@@ -250,10 +250,10 @@ def run_bot():
             send_telegram(msg)
             startup_message_sent = True
             
-            # 2. THEN, add all 4-0 matches to notified_matches
+            # 2. THEN, add all 3-0 matches to notified_matches
             for m in matches:
                 data = parse_sofascore_match(m)
-                if (data['gh'] == 4 and data['ga'] == 0) or (data['gh'] == 0 and data['ga'] == 4):
+                if (data['gh'] == 3 and data['ga'] == 0) or (data['gh'] == 0 and data['ga'] == 3):
                     notified_matches.add(data['id'])
         
         # 3. Sleep loop 
@@ -266,4 +266,5 @@ def run_bot():
 
 if __name__ == "__main__":
     run_bot()
+
 
