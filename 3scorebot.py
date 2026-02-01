@@ -36,6 +36,19 @@ THREE_GOAL_SCORELINES = {(3, 0), (0, 3)}
 DRAW_SCORELINES = {(2, 2), (3, 3), (4, 4)}
 # -----------------------------
 
+# --- TEXT FILTER CONFIG ---
+ALLOWED_TIME_KEYWORDS = ["1st half", "halftime"]
+
+EXCLUDED_LEAGUES = [
+    "Mexico - Liga TDP",
+    "Kenya - Premier League",
+    "Gibraltar - National League",
+    "Finland - Liigacup, Group A",
+    "Iraq - Iraq Stars League",
+    "Greece - Stoiximan Super League",
+]
+# -----------------------------
+
 # --- Logging Setup ---
 logging.basicConfig(
     filename=LOG_FILE,
@@ -73,7 +86,7 @@ def send_telegram(message):
             "parse_mode": "Markdown",
             "disable_web_page_preview": True
         }
-        r = standard_requests.get(url, params=params, timeout=20)
+        r = standard_requests.post(url, data=params, timeout=20)
         r.raise_for_status()
         return True
     except Exception as e:
@@ -95,6 +108,7 @@ def send_telegram_photo(photo_path, caption=""):
             r.raise_for_status()
         return True
     except FileNotFoundError:
+        logging.warning("Photo not found, sending text only.")
         return send_telegram(caption)
     except Exception as e:
         logging.error("Photo send error: %s", e)
@@ -149,24 +163,53 @@ def fetch_live_matches():
         return []
 
 
+def match_passes_text_filters(match_dict):
+    """
+    Build a plain text line and decide purely by text parsing.
+    """
+    text_line = f"{match_dict['status']} | {match_dict['league']} | {match_dict['home']} {match_dict['gh']}-{match_dict['ga']} {match_dict['away']}"
+    text_lower = text_line.lower()
+
+    # Check allowed times
+    if not any(k in text_lower for k in ALLOWED_TIME_KEYWORDS):
+        return False
+
+    # Check excluded leagues
+    for bad in EXCLUDED_LEAGUES:
+        if bad.lower() in text_lower:
+            return False
+
+    return True
+
+
 def format_startup_message(matches):
-    top = matches[:10]
+    filtered = []
+    for m in matches:
+        d = parse_sofascore_match(m)
+        if match_passes_text_filters(d):
+            filtered.append(d)
+
+    top = filtered[:10]
     if not top:
-        return "⚡ *Live Matches at Startup*\n\n_No live matches found._"
+        return "⚡ *Live Matches at Startup*\n\n_No matching live matches found._"
 
     lines = ["⚡ *Top 10 Live Matches at Startup*\n"]
-    for m in top:
-        d = parse_sofascore_match(m)
+    for d in top:
         lines.append(f"*{d['league']}*")
         lines.append(f"{d['home']} *{d['gh']}* - *{d['ga']}* {d['away']} — {d['status']}\n")
 
-    lines.append(f"_{len(matches)} total live matches found._")
+    lines.append(f"_{len(filtered)} matching live matches found._")
     return "\n".join(lines)
 
 
 def check_for_score_alerts(matches):
     for m in matches:
         d = parse_sofascore_match(m)
+
+        # Apply text-based filters
+        if not match_passes_text_filters(d):
+            continue
+
         match_id = d["id"]
         if not match_id or match_id in notified_matches:
             continue
@@ -224,7 +267,7 @@ def run_bot():
             send_telegram(format_startup_message(matches))
             for m in matches:
                 d = parse_sofascore_match(m)
-                if (d["gh"], d["ga"]) in THREE_GOAL_SCORELINES | DRAW_SCORELINES:
+                if match_passes_text_filters(d) and (d["gh"], d["ga"]) in (THREE_GOAL_SCORELINES | DRAW_SCORELINES):
                     notified_matches.add(d["id"])
             startup_message_sent = True
 
