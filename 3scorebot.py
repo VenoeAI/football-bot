@@ -23,6 +23,7 @@ TELEGRAM_BOT_TOKEN = "8414736163:AAHk-RIqgTLiBC6M_fKGoKRBHDtxpoGvFEI"
 TELEGRAM_CHAT_ID = "1584184290"
 
 SOFASCORE_API_URL = "https://api.sofascore.com/api/v1/sport/football/events/live"
+SOFASCORE_EVENT_INCIDENTS_URL = "https://api.sofascore.com/api/v1/event/{event_id}/incidents"
 
 POLL_INTERVAL = 600  # 10 minutes
 LOG_FILE = "3scorebot.log"
@@ -33,7 +34,6 @@ TEST_FILE = "test_live.json"
 
 # --- SCORELINE WATCHLIST ---
 THREE_GOAL_SCORELINES = {(3, 0), (0, 3)}
-DRAW_SCORELINES = {(2, 2), (3, 3), (4, 4)}
 # -----------------------------
 
 # --- TEXT FILTER CONFIG ---
@@ -163,12 +163,55 @@ def fetch_live_matches():
         return []
 
 
+def fetch_goal_times(event_id, leading_is_home=True):
+    """
+    Fetch goal times for the leading team from SofaScore incidents API.
+    Returns a sorted list of minute integers.
+    """
+    url = SOFASCORE_EVENT_INCIDENTS_URL.format(event_id=event_id)
+    try:
+        r = requests.get(url, headers=HEADERS, impersonate="chrome120", timeout=20)
+        r.raise_for_status()
+        data = r.json()
+
+        incidents = data.get("incidents", [])
+        goal_times = []
+
+        for inc in incidents:
+            if inc.get("type") != "goal":
+                continue
+
+            is_home = inc.get("isHome", None)
+            if is_home is None:
+                continue
+
+            if leading_is_home and not is_home:
+                continue
+            if not leading_is_home and is_home:
+                continue
+
+            minute = inc.get("time")
+            if isinstance(minute, int):
+                goal_times.append(minute)
+
+        goal_times.sort()
+        return goal_times
+
+    except Exception as e:
+        logging.error(f"Failed to fetch goal times for event {event_id}: {e}")
+        return []
+
+
 def match_passes_text_filters(match_dict):
     """
     Build a plain text line and decide purely by text parsing.
     """
     text_line = f"{match_dict['status']} | {match_dict['league']} | {match_dict['home']} {match_dict['gh']}-{match_dict['ga']} {match_dict['away']}"
     text_lower = text_line.lower()
+
+    # Block women's leagues
+    if "women" in text_lower:
+        return False
 
     # Check allowed times
     if not any(k in text_lower for k in ALLOWED_TIME_KEYWORDS):
@@ -219,26 +262,33 @@ def check_for_score_alerts(matches):
 
         # --- 3–0 / 0–3 ---
         if score in THREE_GOAL_SCORELINES:
-            leader = d["home"] if gh > ga else d["away"]
+            leading_is_home = gh > ga
+            leader = d["home"] if leading_is_home else d["away"]
+
+            # Fetch goal times for leading team
+            goal_times = fetch_goal_times(match_id, leading_is_home=leading_is_home)
+
+            # We need at least 3 goals to evaluate timing
+            if len(goal_times) >= 3:
+                first_goal = goal_times[0]
+                third_goal = goal_times[2]
+                diff = third_goal - first_goal
+
+                # If goals came too fast, skip alert
+                if diff < 10:
+                    logging.info(
+                        f"Skipping alert for {leader} ({d['home']} vs {d['away']}), goals too fast: {first_goal}' to {third_goal}' ({diff} min)"
+                    )
+                    continue
+
+            # Build caption with copy-friendly team name
             caption = (
                 f"⚽ *GOAL ALERT!*\n\n"
-                f"{leader} leads *{gh} - {ga}*\n\n"
+                f"`{leader}` leads *{gh} - {ga}*\n\n"
                 f"{d['home']} *{gh}* - *{ga}* {d['away']}\n"
                 f"⏱️ **{d['status']}**\n"
                 f"🏆 {d['league']}\n\n"
                 f"🔥 *Stake Now!* 🔥"
-            )
-            if send_telegram_photo("stake_now_small.jpg", caption):
-                notified_matches.add(match_id)
-
-        # --- 2–2 / 3–3 / 4–4 ---
-        elif score in DRAW_SCORELINES:
-            caption = (
-                f"⚠️ *HIGH-SCORING DRAW!*\n\n"
-                f"{d['home']} *{gh}* - *{ga}* {d['away']}\n"
-                f"⏱️ **{d['status']}**\n"
-                f"🏆 {d['league']}\n\n"
-                f"🔥 *Momentum High — Expect Late Action!* 🔥"
             )
             if send_telegram_photo("stake_now_small.jpg", caption):
                 notified_matches.add(match_id)
@@ -267,7 +317,7 @@ def run_bot():
             send_telegram(format_startup_message(matches))
             for m in matches:
                 d = parse_sofascore_match(m)
-                if match_passes_text_filters(d) and (d["gh"], d["ga"]) in (THREE_GOAL_SCORELINES | DRAW_SCORELINES):
+                if match_passes_text_filters(d) and (d["gh"], d["ga"]) in THREE_GOAL_SCORELINES:
                     notified_matches.add(d["id"])
             startup_message_sent = True
 
