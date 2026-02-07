@@ -34,10 +34,10 @@ TEST_FILE = "test_live.json"
 # --- SCORELINE WATCHLIST ---
 THREE_GOAL_SCORELINES = {(3, 0), (0, 3)}
 
-# --- TIME KEYWORDS (TEXT PARSING) ---
+# --- TIME KEYWORDS (TEXT PARSING FOR ALERTS ONLY) ---
 ALLOWED_TIME_KEYWORDS = ["1st half", "halftime", "ht", "live"]
 
-# --- EXCLUDED LEAGUES (EXACT / PARTIAL MATCH BY TEXT) ---
+# --- EXCLUDED LEAGUES / KEYWORDS (TEXT PARSING FOR ALERTS ONLY) ---
 EXCLUDED_LEAGUE_KEYWORDS = [
     "mexico - liga tdp",
     "kenya - premier league",
@@ -132,7 +132,6 @@ def parse_sofascore_match(match):
     category = match.get("tournament", {}).get("category", {}).get("name", "")
     full_league = f"{category} - {league}" if category else league
 
-    # Build a combined text blob for text-based filtering
     combined_text = f"{home} {away} {status} {full_league}".lower()
 
     return {
@@ -172,7 +171,8 @@ def fetch_live_matches():
         return []
 
 
-def passes_text_filters(d):
+# --- FILTERS FOR ALERTS ONLY ---
+def passes_alert_filters(d):
     text = d["text"]
 
     # Must contain allowed time keyword
@@ -193,22 +193,17 @@ def passes_text_filters(d):
 
 
 def format_startup_message(matches):
-    filtered = []
-    for m in matches:
-        d = parse_sofascore_match(m)
-        if passes_text_filters(d):
-            filtered.append(d)
-
-    top = filtered[:10]
+    top = matches[:10]
     if not top:
-        return "⚡ *Live Matches at Startup*\n\n_No matching live matches found._"
+        return "⚡ *Live Matches at Startup*\n\n_No live matches found._"
 
     lines = ["⚡ *Top 10 Live Matches at Startup*\n"]
-    for d in top:
+    for m in top:
+        d = parse_sofascore_match(m)
         lines.append(f"*{d['league']}*")
         lines.append(f"`{d['home']}` *{d['gh']}* - *{d['ga']}* `{d['away']}` — {d['status']}\n")
 
-    lines.append(f"_{len(filtered)} matching live matches found._")
+    lines.append(f"_{len(matches)} total live matches found._")
     return "\n".join(lines)
 
 
@@ -219,8 +214,8 @@ def check_for_score_alerts(matches):
         if not match_id or match_id in notified_matches:
             continue
 
-        # Apply text-based filters
-        if not passes_text_filters(d):
+        # Apply alert-only filters
+        if not passes_alert_filters(d):
             continue
 
         gh, ga = d["gh"], d["ga"]
@@ -262,10 +257,6 @@ def run_bot():
 
         if not startup_message_sent:
             send_telegram(format_startup_message(matches))
-            for m in matches:
-                d = parse_sofascore_match(m)
-                if passes_text_filters(d) and (d["gh"], d["ga"]) in THREE_GOAL_SCORELINES:
-                    notified_matches.add(d["id"])
             startup_message_sent = True
 
         logging.info(f"Sleeping for {POLL_INTERVAL} seconds...")
