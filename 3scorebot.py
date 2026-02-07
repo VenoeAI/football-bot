@@ -33,23 +33,25 @@ TEST_FILE = "test_live.json"
 
 # --- SCORELINE WATCHLIST ---
 THREE_GOAL_SCORELINES = {(3, 0), (0, 3)}
-# -----------------------------
 
-# --- TEXT FILTER CONFIG ---
+# --- TIME KEYWORDS (TEXT PARSING) ---
 ALLOWED_TIME_KEYWORDS = ["1st half", "halftime", "ht", "live"]
 
-EXCLUDED_LEAGUES = [
-    "Mexico - Liga TDP",
-    "Kenya - Premier League",
-    "Gibraltar - National League",
-    "Finland - Liigacup, Group A",
-    "Iraq - Iraq Stars League",
-    "Greece - Stoiximan Super League",
-    "Women",
-    "Féminine",
+# --- EXCLUDED LEAGUES (EXACT / PARTIAL MATCH BY TEXT) ---
+EXCLUDED_LEAGUE_KEYWORDS = [
+    "mexico - liga tdp",
+    "kenya - premier league",
+    "gibraltar - national league",
+    "finland - liigacup, group a",
+    "iraq - iraq stars league",
+    "greece - stoiximan super league",
+    "women",
+    "féminine",
 ]
 
-PENALTY_KEYWORDS = ["penalty", "pen."]  # text-based scan
+# --- PENALTY KEYWORDS ---
+PENALTY_KEYWORDS = ["penalty", "pen."]
+
 # -----------------------------
 
 # --- Logging Setup ---
@@ -83,13 +85,13 @@ HEADERS = {
 def send_telegram(message):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        params = {
+        data = {
             "chat_id": TELEGRAM_CHAT_ID,
             "text": message,
             "parse_mode": "Markdown",
             "disable_web_page_preview": True
         }
-        r = standard_requests.post(url, data=params, timeout=20)
+        r = standard_requests.post(url, data=data, timeout=20)
         r.raise_for_status()
         return True
     except Exception as e:
@@ -111,7 +113,7 @@ def send_telegram_photo(photo_path, caption=""):
             r.raise_for_status()
         return True
     except FileNotFoundError:
-        logging.warning("Photo not found, sending text only.")
+        logging.warning("Image not found, sending text only.")
         return send_telegram(caption)
     except Exception as e:
         logging.error("Photo send error: %s", e)
@@ -130,6 +132,9 @@ def parse_sofascore_match(match):
     category = match.get("tournament", {}).get("category", {}).get("name", "")
     full_league = f"{category} - {league}" if category else league
 
+    # Build a combined text blob for text-based filtering
+    combined_text = f"{home} {away} {status} {full_league}".lower()
+
     return {
         "id": match.get("id"),
         "home": home,
@@ -137,7 +142,8 @@ def parse_sofascore_match(match):
         "gh": int(gh),
         "ga": int(ga),
         "status": status,
-        "league": full_league
+        "league": full_league,
+        "text": combined_text
     }
 
 
@@ -166,34 +172,22 @@ def fetch_live_matches():
         return []
 
 
-def match_has_penalty_text(match):
-    try:
-        blob = json.dumps(match).lower()
-    except Exception:
-        blob = str(match).lower()
+def passes_text_filters(d):
+    text = d["text"]
 
-    for k in PENALTY_KEYWORDS:
-        if k in blob:
-            return True
-    return False
-
-
-def match_passes_text_filters(match_dict, raw_match):
-    text_line = f"{match_dict['status']} | {match_dict['league']} | {match_dict['home']} {match_dict['gh']}-{match_dict['ga']} {match_dict['away']}"
-    text_lower = text_line.lower()
-
-    # Check allowed times
-    if not any(k in text_lower for k in ALLOWED_TIME_KEYWORDS):
+    # Must contain allowed time keyword
+    if not any(k in text for k in ALLOWED_TIME_KEYWORDS):
         return False
 
-    # Check excluded leagues
-    for bad in EXCLUDED_LEAGUES:
-        if bad.lower() in text_lower:
+    # Exclude leagues / keywords
+    for bad in EXCLUDED_LEAGUE_KEYWORDS:
+        if bad.lower() in text:
             return False
 
-    # Check for penalties anywhere in match text
-    if match_has_penalty_text(raw_match):
-        return False
+    # Exclude any penalty mention
+    for p in PENALTY_KEYWORDS:
+        if p in text:
+            return False
 
     return True
 
@@ -202,7 +196,7 @@ def format_startup_message(matches):
     filtered = []
     for m in matches:
         d = parse_sofascore_match(m)
-        if match_passes_text_filters(d, m):
+        if passes_text_filters(d):
             filtered.append(d)
 
     top = filtered[:10]
@@ -212,7 +206,7 @@ def format_startup_message(matches):
     lines = ["⚡ *Top 10 Live Matches at Startup*\n"]
     for d in top:
         lines.append(f"*{d['league']}*")
-        lines.append(f"{d['home']} *{d['gh']}* - *{d['ga']}* {d['away']} — {d['status']}\n")
+        lines.append(f"`{d['home']}` *{d['gh']}* - *{d['ga']}* `{d['away']}` — {d['status']}\n")
 
     lines.append(f"_{len(filtered)} matching live matches found._")
     return "\n".join(lines)
@@ -221,13 +215,12 @@ def format_startup_message(matches):
 def check_for_score_alerts(matches):
     for m in matches:
         d = parse_sofascore_match(m)
-
-        # Apply text-based filters (time, league, penalty)
-        if not match_passes_text_filters(d, m):
-            continue
-
         match_id = d["id"]
         if not match_id or match_id in notified_matches:
+            continue
+
+        # Apply text-based filters
+        if not passes_text_filters(d):
             continue
 
         gh, ga = d["gh"], d["ga"]
@@ -271,7 +264,7 @@ def run_bot():
             send_telegram(format_startup_message(matches))
             for m in matches:
                 d = parse_sofascore_match(m)
-                if match_passes_text_filters(d, m) and (d["gh"], d["ga"]) in THREE_GOAL_SCORELINES:
+                if passes_text_filters(d) and (d["gh"], d["ga"]) in THREE_GOAL_SCORELINES:
                     notified_matches.add(d["id"])
             startup_message_sent = True
 
@@ -284,5 +277,3 @@ def run_bot():
 
 if __name__ == "__main__":
     run_bot()
-
-
