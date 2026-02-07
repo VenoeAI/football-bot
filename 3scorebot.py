@@ -37,7 +37,7 @@ DRAW_SCORELINES = {(2, 2), (3, 3), (4, 4)}
 # -----------------------------
 
 # --- TEXT FILTER CONFIG ---
-ALLOWED_TIME_KEYWORDS = ["1st half", "halftime"]
+ALLOWED_TIME_KEYWORDS = ["1st half", "halftime", "HT", "Live"]
 
 EXCLUDED_LEAGUES = [
     "Mexico - Liga TDP",
@@ -302,3 +302,4 @@ def run_bot():
 
 if __name__ == "__main__":
     run_bot()
+
