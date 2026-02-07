@@ -33,11 +33,10 @@ TEST_FILE = "test_live.json"
 
 # --- SCORELINE WATCHLIST ---
 THREE_GOAL_SCORELINES = {(3, 0), (0, 3)}
-DRAW_SCORELINES = {(2, 2), (3, 3), (4, 4)}
 # -----------------------------
 
 # --- TEXT FILTER CONFIG ---
-ALLOWED_TIME_KEYWORDS = ["1st half", "halftime", "HT", "Live"]
+ALLOWED_TIME_KEYWORDS = ["1st half", "halftime", "ht", "live"]
 
 EXCLUDED_LEAGUES = [
     "Mexico - Liga TDP",
@@ -166,10 +165,6 @@ def fetch_live_matches():
 
 
 def match_has_penalty_text(match):
-    """
-    Convert entire match JSON to text and look for penalty keywords.
-    Pure text parsing, no structured field logic.
-    """
     try:
         blob = json.dumps(match).lower()
     except Exception:
@@ -182,9 +177,6 @@ def match_has_penalty_text(match):
 
 
 def match_passes_text_filters(match_dict, raw_match):
-    """
-    Build a plain text line and decide purely by text parsing.
-    """
     text_line = f"{match_dict['status']} | {match_dict['league']} | {match_dict['home']} {match_dict['gh']}-{match_dict['ga']} {match_dict['away']}"
     text_lower = text_line.lower()
 
@@ -239,28 +231,16 @@ def check_for_score_alerts(matches):
         gh, ga = d["gh"], d["ga"]
         score = (gh, ga)
 
-        # --- 3–0 / 0–3 ---
+        # --- 3–0 / 0–3 ONLY ---
         if score in THREE_GOAL_SCORELINES:
             leader = d["home"] if gh > ga else d["away"]
             caption = (
                 f"⚽ *GOAL ALERT!*\n\n"
-                f"{leader} leads *{gh} - {ga}*\n\n"
-                f"{d['home']} *{gh}* - *{ga}* {d['away']}\n"
+                f"`{leader}` leads *{gh} - {ga}*\n\n"
+                f"`{d['home']}` *{gh}* - *{ga}* `{d['away']}`\n"
                 f"⏱️ **{d['status']}**\n"
                 f"🏆 {d['league']}\n\n"
                 f"🔥 *Stake Now!* 🔥"
-            )
-            if send_telegram_photo("stake_now_small.jpg", caption):
-                notified_matches.add(match_id)
-
-        # --- 2–2 / 3–3 / 4–4 ---
-        elif score in DRAW_SCORELINES:
-            caption = (
-                f"⚠️ *HIGH-SCORING DRAW!*\n\n"
-                f"{d['home']} *{gh}* - *{ga}* {d['away']}\n"
-                f"⏱️ **{d['status']}**\n"
-                f"🏆 {d['league']}\n\n"
-                f"🔥 *Momentum High — Expect Late Action!* 🔥"
             )
             if send_telegram_photo("stake_now_small.jpg", caption):
                 notified_matches.add(match_id)
@@ -289,7 +269,7 @@ def run_bot():
             send_telegram(format_startup_message(matches))
             for m in matches:
                 d = parse_sofascore_match(m)
-                if match_passes_text_filters(d, m) and (d["gh"], d["ga"]) in (THREE_GOAL_SCORELINES | DRAW_SCORELINES):
+                if match_passes_text_filters(d, m) and (d["gh"], d["ga"]) in THREE_GOAL_SCORELINES:
                     notified_matches.add(d["id"])
             startup_message_sent = True
 
@@ -302,4 +282,3 @@ def run_bot():
 
 if __name__ == "__main__":
     run_bot()
-
