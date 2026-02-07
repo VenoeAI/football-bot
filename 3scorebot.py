@@ -46,6 +46,7 @@ EXCLUDED_LEAGUES = [
     "Iraq - Iraq Stars League",
     "Greece - Stoiximan Super League",
     "Women",
+    "Féminine",
 ]
 
 PENALTY_KEYWORDS = ["penalty", "pen."]  # text-based scan
@@ -283,4 +284,5 @@ def run_bot():
 
 if __name__ == "__main__":
     run_bot()
+
 
