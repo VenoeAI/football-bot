@@ -173,7 +173,7 @@ def match_has_penalty_text(match):
         blob = str(match).lower()
 
     for k in PENALTY_KEYWORDS:
-        if k in blob:
+        if k in blobbly:
             return True
     return False
 
@@ -279,3 +279,4 @@ def run_bot():
 
 if __name__ == "__main__":
     run_bot()
+
