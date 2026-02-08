@@ -45,11 +45,11 @@ EXCLUDED_LEAGUES = [
     "Finland - Liigacup, Group A",
     "Iraq - Iraq Stars League",
     "Greece - Stoiximan Super League",
-    "Women",
-    "Féminine"
+    "women",
+    "féminine"
 ]
 
-PENALTY_KEYWORDS = ["penalty", "pen"]
+PENALTY_KEYWORDS = ["penalty", "pen"]  # text-based scan
 # -----------------------------
 
 # --- Logging Setup ---
@@ -165,11 +165,8 @@ def fetch_live_matches():
         logging.error(f"Unexpected fetch error: {e}")
         return []
 
+
 def match_has_penalty_text(match):
-    """
-    Convert entire match JSON to text and look for penalty keywords.
-    Pure text parsing, no structured field logic.
-    """
     try:
         blob = json.dumps(match).lower()
     except Exception:
@@ -180,23 +177,18 @@ def match_has_penalty_text(match):
             return True
     return False
 
-def match_passes_text_filters(match_dict):
-    """
-    Build a plain text line and decide purely by text parsing.
-    """
+
+def match_passes_text_filters(match_dict, raw_match):
     text_line = f"{match_dict['status']} | {match_dict['league']} | {match_dict['home']} {match_dict['gh']}-{match_dict['ga']} {match_dict['away']}"
     text_lower = text_line.lower()
 
-    # Check allowed times
     if not any(k in text_lower for k in ALLOWED_TIME_KEYWORDS):
         return False
 
-    # Check excluded leagues
     for bad in EXCLUDED_LEAGUES:
         if bad.lower() in text_lower:
             return False
 
-    # Check for penalties anywhere in match text
     if match_has_penalty_text(raw_match):
         return False
 
@@ -207,7 +199,7 @@ def format_startup_message(matches):
     filtered = []
     for m in matches:
         d = parse_sofascore_match(m)
-        if match_passes_text_filters(d):
+        if match_passes_text_filters(d, m):
             filtered.append(d)
 
     top = filtered[:10]
@@ -227,8 +219,7 @@ def check_for_score_alerts(matches):
     for m in matches:
         d = parse_sofascore_match(m)
 
-        # Apply text-based filters
-        if not match_passes_text_filters(d):
+        if not match_passes_text_filters(d, m):
             continue
 
         match_id = d["id"]
@@ -238,12 +229,11 @@ def check_for_score_alerts(matches):
         gh, ga = d["gh"], d["ga"]
         score = (gh, ga)
 
-        # --- 3–0 / 0–3 ---
         if score in THREE_GOAL_SCORELINES:
             leader = d["home"] if gh > ga else d["away"]
             caption = (
                 f"⚽ *GOAL ALERT!*\n\n"
-                f"{leader} leads *{gh} - {ga}*\n\n"
+                f"`{leader}` leads *{gh} - {ga}*\n\n"
                 f"{d['home']} *{gh}* - *{ga}* {d['away']}\n"
                 f"⏱️ **{d['status']}**\n"
                 f"🏆 {d['league']}\n\n"
@@ -276,7 +266,7 @@ def run_bot():
             send_telegram(format_startup_message(matches))
             for m in matches:
                 d = parse_sofascore_match(m)
-                if match_passes_text_filters(d) and (d["gh"], d["ga"]) in (THREE_GOAL_SCORELINES):
+                if match_passes_text_filters(d, m) and (d["gh"], d["ga"]) in THREE_GOAL_SCORELINES:
                     notified_matches.add(d["id"])
             startup_message_sent = True
 
